@@ -1,0 +1,419 @@
+import random
+import heapq
+from collections import defaultdict
+
+class Chromosome:
+    
+    def __init__(self, production_data):
+        self.production_data = production_data
+        self.reprocessing_operations = {
+            "Cleaning": ["RW1", "RW2"],
+            "Inspection": ["RW3", "RW4", "RW5"],
+            "Repair": ["RW6"],
+            "Reconditioning": ["RW7", "RW8", "RW9"],
+        }
+        self.component_operations = self.production_data.generate_component_operations()
+        self.workstation_schedules = defaultdict(list)
+
+    def calculate_profit(self):
+        man_demand = self.production_data.man_product['demand']
+        man_price = self.production_data.man_product['price']
+        man_cost = self.production_data.manufacturing_cost
+
+        reman_demand = self.production_data.reman_product['demand']
+        reman_price = self.production_data.reman_product['price']
+        reman_costs = self.production_data.costreman
+
+        manufactured_profit = man_demand * (man_price - man_cost)
+        remanufactured_profit = (reman_price * reman_demand) - sum(reman_costs)
+        total_profit = manufactured_profit + remanufactured_profit
+          
+        print(f"Manufactured Profit: {manufactured_profit:.2f}")
+        print(f"Remanufactured Profit: {remanufactured_profit:.2f}")
+        print(f"Total Profit: {total_profit:.2f}")
+
+    def calculate_duration(self):
+        man_duration = self.calculate_manufacturing_duration()
+        reman_duration = self.calculate_remanufacturing_duration()
+        print(f"Total Manufacturing Duration: {man_duration:.2f} hours")
+        print(f"Total Remanufacturing Duration: {reman_duration:.2f} hours")
+
+    def calculate_manufacturing_duration(self):
+        testing_duration = self.production_data.manufacturing_duration['testing']
+        assembling_duration = self.production_data.manufacturing_duration['assembling']
+        total_manufacturing_duration = (testing_duration + assembling_duration) * self.production_data.man_product['demand']
+        return total_manufacturing_duration
+
+    def calculate_remanufacturing_duration(self):
+        total_duration = 0
+        for i in range(self.production_data.reman_product['demand']):
+            total_duration += self.production_data.Remantesting_duration
+            total_duration += self.production_data.disassembly_durations[i]
+            for component in self.component_operations[i]['operations']:
+                for component_name, operations in component.items():
+                    for operation_name, duration in operations.items():
+                        total_duration += duration
+            total_duration += self.production_data.assembling_durations[i]
+        return total_duration
+
+    def assign_tasks(self):
+        current_time = 0
+        task_queue = []
+
+        for i in range(self.production_data.reman_product['demand']):
+            heapq.heappush(task_queue, (current_time, 'remanufactured', i))
+
+        for i in range(self.production_data.man_product['demand']):
+            heapq.heappush(task_queue, (current_time, 'manufactured', i))
+
+        while task_queue:
+            time, product_type, index = heapq.heappop(task_queue)
+            if product_type == 'remanufactured':
+                current_time = self.schedule_remanufactured_product(index, current_time)
+            else:
+                current_time = self.schedule_manufactured_product(index, current_time)
+
+    def schedule_remanufactured_product(self, index, start_time):
+        testing_workstation = self.remanufactured_testing_workstations[index]
+        disassembling_workstation = self.remanufactured_disassembling_workstations[index]
+        assembling_workstation = self.remanufactured_assembling_workstations[index]
+
+        testing_duration = self.production_data.Remantesting_duration
+        disassembling_duration = self.production_data.disassembly_durations[index]
+        assembling_duration = self.production_data.assembling_durations[index]
+
+        start_time = self.schedule_task(testing_workstation, 'Testing', start_time, testing_duration, f'Remanufactured Product {index + 1}')
+
+        start_time = self.schedule_task(disassembling_workstation, 'Disassembling', start_time, disassembling_duration, f'Remanufactured Product {index + 1}')
+
+        for component in self.component_operations[index]['operations']:
+            component_name = list(component.keys())[0]
+            for operation_name, duration in component[component_name].items():
+                available_workstation = self.find_available_workstation(operation_name, start_time, duration)
+                start_time = self.schedule_task(available_workstation, operation_name, start_time, duration, component_name)
+
+        start_time = self.schedule_task(assembling_workstation, 'Assembling', start_time, assembling_duration, f'Remanufactured Product {index + 1}')
+        return start_time
+
+    def schedule_manufactured_product(self, index, start_time):
+        testing_workstation = self.manufactured_testing_workstations[index]
+        assembling_workstation = self.manufactured_assembling_workstations[index]
+
+        assembling_duration = self.production_data.manufacturing_duration['assembling']
+        testing_duration = self.production_data.manufacturing_duration['testing']
+
+        start_time = self.schedule_task(assembling_workstation, 'Assembling', start_time, assembling_duration, f'Manufactured Product {index + 1}')
+
+        start_time = self.schedule_task(testing_workstation, 'Testing', start_time, testing_duration, f'Manufactured Product {index + 1}')
+        return start_time
+
+    def find_available_workstation(self, operation_name, start_time, duration):
+        workstations = self.reprocessing_operations[operation_name]
+        for workstation in workstations:
+            if self.is_workstation_available(workstation, start_time, duration):
+                return workstation
+        return workstations[0]
+
+    def is_workstation_available(self, workstation, start_time, duration):
+        for scheduled_task in self.workstation_schedules[workstation]:
+            if start_time < scheduled_task['end_time'] and (start_time + duration) > scheduled_task['start_time']:
+                return False
+        return True
+
+    def schedule_task(self, workstation, task_type, start_time, duration, product_name):
+        end_time = start_time + duration
+        self.workstation_schedules[workstation].append({
+            "task_type": task_type,
+            "product_name": product_name,
+            "start_time": start_time,
+            "end_time": end_time
+        })
+        print(f"{task_type} {product_name} assigned to {workstation} from {start_time} to {end_time}")
+        return end_time
+
+    def assign_testing_order(self):
+        testing_products = defaultdict(list)
+        random_numbers_table = []
+
+        # Generate random numbers for each product in each testing workstation
+        def get_random_numbers_for_workstations(product, product_type):
+            workstation_numbers = {}
+            row = [product]
+            for tw in self.testing_workstations:
+                random_number = random.uniform(-10, 10)
+                workstation_numbers[tw] = random_number
+                row.append(random_number)
+            random_numbers_table.append(row)
+            return workstation_numbers
+
+        # Assign testing order for manufactured products
+        for i in range(self.production_data.man_product['demand']):
+            product_name = f"Manufactured Product {i + 1}"
+            random_numbers = get_random_numbers_for_workstations(product_name, "manufactured")
+            # Assign the product to the workstation with the highest random number
+            best_workstation = max(random_numbers, key=random_numbers.get)
+            random_numbers_table[-1].append(f"TW{self.testing_workstations.index(best_workstation) + 1}")
+            testing_products[best_workstation].append({
+                "type": "manufactured",
+                "product": product_name,
+                "random_number": random_numbers[best_workstation]
+            })
+
+        # Assign testing order for remanufactured products
+        for i in range(self.production_data.reman_product['demand']):
+            product_name = f"Remanufactured Product {i + 1}"
+            random_numbers = get_random_numbers_for_workstations(product_name, "remanufactured")
+            # Assign the product to the workstation with the highest random number
+            best_workstation = max(random_numbers, key=random_numbers.get)
+            random_numbers_table[-1].append(f"TW{self.testing_workstations.index(best_workstation) + 1}")
+            testing_products[best_workstation].append({
+                "type": "remanufactured",
+                "product": product_name,
+                "random_number": random_numbers[best_workstation]
+            })
+
+        # Print the initial table
+        header = ["Product", "TW1", "TW2", "Chosen TW"]
+        print(f"{header[0]:<25} {header[1]:<10} {header[2]:<10} {header[3]:<10}")
+
+        for row in random_numbers_table:
+            formatted_row = [f"{item:.2f}" if isinstance(item, float) else item for item in row]
+            print(f"{formatted_row[0]:<25} {formatted_row[1]:<10} {formatted_row[2]:<10} {formatted_row[3]:<10}")
+
+        # Regroup the components assigned to the same TWs and assign new random numbers
+        final_assignments = defaultdict(list)
+        for row in random_numbers_table:
+            product, tw1, tw2, chosen_tw = row
+            best_workstation = self.testing_workstations[int(chosen_tw[-1]) - 1]
+            new_random_number = random.uniform(0, 10)
+            final_assignments[chosen_tw].append({
+                "product": product,
+                "new_random_number": new_random_number
+            })
+
+        # Sort the products within each TW based on the new random numbers
+        for products in final_assignments.values():
+            products.sort(key=lambda x: x['new_random_number'])
+
+        # Print the final sequencing
+        print("\nFinal Sequencing:")
+        for chosen_tw, products in final_assignments.items():
+            print(f"{chosen_tw}: Assigned Products and Random Real Numbers (sorted)")
+            for product in products:
+                print(f"    {product['product']:<25} {product['new_random_number']:<10.2f}")
+            print()  # For a blank line between different TWs
+
+        return testing_products
+
+    def assign_assembling_order(self):
+        assembling_products = defaultdict(list)
+        random_numbers_table = []
+
+        # Generate random numbers for each product in each assembling workstation
+        def get_random_numbers_for_workstations(product, product_type):
+            workstation_numbers = {}
+            row = [product]
+            for aw in self.assembling_workstations:
+                random_number = random.uniform(-10, 10)
+                workstation_numbers[aw] = random_number
+                row.append(random_number)
+            random_numbers_table.append(row)
+            return workstation_numbers
+
+        # Assign assembling order for manufactured products
+        for i in range(self.production_data.man_product['demand']):
+            product_name = f"Manufactured Product {i + 1}"
+            random_numbers = get_random_numbers_for_workstations(product_name, "manufactured")
+            # Assign the product to the workstation with the highest random number
+            best_workstation = max(random_numbers, key=random_numbers.get)
+            random_numbers_table[-1].append(f"AW{self.assembling_workstations.index(best_workstation) + 1}")
+            assembling_products[best_workstation].append({
+                "type": "manufactured",
+                "product": product_name,
+                "random_number": random_numbers[best_workstation]
+            })
+
+        # Assign assembling order for remanufactured products
+        for i in range(self.production_data.reman_product['demand']):
+            product_name = f"Remanufactured Product {i + 1}"
+            random_numbers = get_random_numbers_for_workstations(product_name, "remanufactured")
+            # Assign the product to the workstation with the highest random number
+            best_workstation = max(random_numbers, key=random_numbers.get)
+            random_numbers_table[-1].append(f"AW{self.assembling_workstations.index(best_workstation) + 1}")
+            assembling_products[best_workstation].append({
+                "type": "remanufactured",
+                "product": product_name,
+                "random_number": random_numbers[best_workstation]
+            })
+
+        # Print the initial table
+        header = ["Product", "AW1", "AW2", "Chosen AW"]
+        print(f"{header[0]:<25} {header[1]:<10} {header[2]:<10} {header[3]:<10}")
+
+        for row in random_numbers_table:
+            formatted_row = [f"{item:.2f}" if isinstance(item, float) else item for item in row]
+            print(f"{formatted_row[0]:<25} {formatted_row[1]:<10} {formatted_row[2]:<10} {formatted_row[3]:<10}")
+
+        # Regroup the components assigned to the same AWs and assign new random numbers
+        final_assignments = defaultdict(list)
+        for row in random_numbers_table:
+            product, aw1, aw2, chosen_aw = row
+            best_workstation = self.assembling_workstations[int(chosen_aw[-1]) - 1]
+            new_random_number = random.uniform(0, 10)
+            final_assignments[chosen_aw].append({
+                "product": product,
+                "new_random_number": new_random_number
+            })
+
+        # Sort the products within each AW based on the new random numbers
+        for products in final_assignments.values():
+            products.sort(key=lambda x: x['new_random_number'])
+
+        # Print the final sequencing
+        print("\nFinal Sequencing:")
+        for chosen_aw, products in final_assignments.items():
+            print(f"{chosen_aw}: Assigned Products and Random Real Numbers (sorted)")
+            for product in products:
+                print(f"    {product['product']:<25} {product['new_random_number']:<10.2f}")
+            print()  # For a blank line between different AWs
+
+        return assembling_products
+    
+    def assign_disassembling_order(self):
+        disassembling_products = defaultdict(list)
+        random_numbers_table = []
+
+        # Generate random numbers for each product in each disassembling workstation
+        def get_random_numbers_for_workstations(product):
+            workstation_numbers = {}
+            row = [product]
+            for aw in self.assembling_workstations:  # Using assembling_workstations assuming it's correct
+                random_number = random.uniform(-10, 10)
+                workstation_numbers[aw] = random_number
+                row.append(random_number)
+            random_numbers_table.append(row)
+            return workstation_numbers
+
+        # Assign disassembling order for remanufactured products
+        for i in range(self.production_data.reman_product['demand']):
+            product_name = f"Remanufactured Product {i + 1}"
+            random_numbers = get_random_numbers_for_workstations(product_name)
+            # Assign the product to the workstation with the highest random number
+            best_workstation = max(random_numbers, key=random_numbers.get)
+            random_numbers_table[-1].append(f"DW{self.assembling_workstations.index(best_workstation) + 1}")
+            disassembling_products[best_workstation].append({
+                "type": "remanufactured",
+                "product": product_name,
+                "random_number": random_numbers[best_workstation]
+            })
+
+        # Print the initial table
+        header = ["Product"] + [f"DW{i+1}" for i in range(len(self.assembling_workstations))]
+        header.append("Chosen DW")
+        print(f"{header[0]:<25} " + " ".join([f"{h:<10}" for h in header[1:]]))
+
+        for row in random_numbers_table:
+            formatted_row = [f"{item:.2f}" if isinstance(item, float) else item for item in row]
+            print(" ".join([f"{formatted_row[i]:<25}" if i == 0 else f"{formatted_row[i]:<10}" for i in range(len(formatted_row))]))
+
+        # Regroup the components assigned to the same DWs and assign new random numbers
+        final_assignments = defaultdict(list)
+        for row in random_numbers_table:
+            product, *random_numbers, chosen_dw = row
+            best_workstation = self.assembling_workstations[int(chosen_dw[-1]) - 1]
+            new_random_number = random.uniform(0, 10)
+            final_assignments[chosen_dw].append({
+                "product": product,
+                "new_random_number": new_random_number
+            })
+
+        # Sort the products within each DW based on the new random numbers
+        for products in final_assignments.values():
+            products.sort(key=lambda x: x['new_random_number'])
+
+        # Print the final sequencing
+        print("\nFinal Sequencing:")
+        for chosen_dw, products in final_assignments.items():
+            print(f"{chosen_dw}: Assigned Products and Random Real Numbers (sorted)")
+            for product in products:
+                print(f"    {product['product']:<25} {product['new_random_number']:<10.2f}")
+            print()  # For a blank line between different DWs
+
+        return disassembling_products
+
+    def assign_component_operations_to_rws(self):
+        operation_dict = {op: [] for op in self.production_data.reprocessing_operations.keys()}
+        output_string = "Component Operations Assignment:\n"
+        output_string += "{:<15} {:<20} ".format("Component", "Operation")
+
+        all_rws = set(rw for rws in self.production_data.reprocessing_operations.values() for rw in rws)
+        rw_columns = list(all_rws)
+
+        for rw_name in rw_columns:
+            output_string += f"{rw_name:<10}"
+        output_string += " Chosen RW \n"
+
+        output_string += "=" * (15 + 20 + 10 * len(rw_columns) + 10) + "\n"
+
+        for product_operations in self.component_operations:
+            product_index = product_operations["product_index"]
+            component_index = 1  # Start component index at 1 for each product
+
+            for component_operations_dict in product_operations["operations"]:
+                for component_name, operations_dict in component_operations_dict.items():
+                    component_id = f"C{product_index}{component_index}"  # Format component ID as C{product_index}{component_index}
+                    component_index += 1  # Increment component index
+
+                    for operation_name, operation_duration in operations_dict.items():
+                        if operation_name in self.production_data.reprocessing_operations:
+                            rw_random_numbers = {rw: None for rw in rw_columns}
+                            for rw_name in self.production_data.reprocessing_operations[operation_name]:
+                                rw_random_numbers[rw_name] = random.uniform(0, 10)
+
+                            chosen_rw = max(rw_random_numbers, key=lambda x: (rw_random_numbers[x] if rw_random_numbers[x] is not None else -float('inf')))
+
+                            operation_dict[operation_name].append({
+                                "component_id": component_id,
+                                "operation_name": operation_name,
+                                "rw_random_numbers": rw_random_numbers,
+                                "chosen_rw": chosen_rw
+                            })
+
+                            output_string += f"{component_id:<15} {operation_name:<20} "
+                            for rw_name in rw_columns:
+                                if rw_name in rw_random_numbers and rw_random_numbers[rw_name] is not None:
+                                    output_string += f"{rw_random_numbers[rw_name]:<10.2f}"
+                                else:
+                                    output_string += f"{'-':<10}"
+                            output_string += f" {chosen_rw if rw_random_numbers[chosen_rw] is not None else '-':<10}\n"
+                        else:
+                            print(f"Operation '{operation_name}' not found in reprocessing_operations.")
+
+        return operation_dict, output_string
+
+    def regroup_and_sort_components(self, operation_dict):
+        rw_assignments = {}
+
+        for operations in operation_dict.values():
+            for op in operations:
+                chosen_rw = op["chosen_rw"]
+                if chosen_rw not in rw_assignments:
+                    rw_assignments[chosen_rw] = []
+                random_number = random.uniform(0, 10)
+                rw_assignments[chosen_rw].append((op["component_id"], random_number))
+
+        output_string = "Final Sequencing:\n"
+        for rw, components in rw_assignments.items():
+            output_string += f"{rw}: Assigned Products and Random Real Numbers (sorted)\n"
+            sorted_components = sorted(components, key=lambda x: x[1])
+            for component_id, random_number in sorted_components:
+                output_string += f"    {component_id:<25} {random_number:<10.2f}\n"
+
+        return output_string
+    
+
+
+
+
+
+
